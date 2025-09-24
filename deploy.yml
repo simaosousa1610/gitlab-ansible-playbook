@@ -1,0 +1,9 @@
+---
+- name: Installing Gitlab
+  hosts:
+    - all
+  collections:
+    - community.general
+    - containers.podman
+  roles:
+    - install-gitlab

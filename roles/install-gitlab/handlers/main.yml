@@ -1,0 +1,53 @@
+---
+# handlers file for install-gitlab
+
+- name: Start and enable services
+  ansible.builtin.systemd:
+    name: "{{ service }}"
+    enabled: true
+    state: started
+  loop_control:
+    loop_var: service
+  loop:
+    - sshd
+    - postfix
+
+- name: Clear yum cache
+  ansible.builtin.command:
+    cmd: yum clean all
+  changed_when: true
+
+- name: Check if API token already exists
+  ansible.builtin.shell:
+    cmd: >
+      gitlab-rails runner "puts User.find_by_username('root').personal_access_tokens.find_by(name: 'Ansible Automation token')&.id || 'not_found'"
+  register: token_check
+  changed_when: false
+  listen:
+    - setup_api_token
+
+- name: Setting access token for API access
+  ansible.builtin.shell:
+    cmd: >
+      gitlab-rails runner "token = User.find_by_username('root').personal_access_tokens.create(scopes: [:api], name: 'Ansible Automation token'); token.set_token('{{ gitlab_admin_password }}'); token.save!"
+  register: token_create_output
+  when: token_check.stdout == 'not_found'
+  listen:
+    - setup_api_token
+
+- name: Reload firewall
+  ansible.builtin.systemd:
+    name: firewalld
+    state: reloaded
+  become: true
+  changed_when: true
+  listen:
+    - Reload firewall
+
+- name: Reconfigure GitLab
+  ansible.builtin.command:
+    cmd: gitlab-ctl reconfigure
+  become: true
+  changed_when: true
+  listen:
+    - Reconfigure GitLab

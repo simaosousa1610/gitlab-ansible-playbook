@@ -1,0 +1,3 @@
+---
+# defaults file for install-gitlab
+gitlab_edition: 'community'

@@ -1,0 +1,132 @@
+---
+# tasks file for gitlab
+- name: Create GitLab data directories
+  ansible.builtin.file:
+    path: "{{ gitlab_data_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - config
+    - logs
+    - data
+    - gitlab-runner
+  become: true
+
+- name: Deploy GitLab container
+  containers.podman.podman_container:
+    name: gitlab
+    image: "{{ gitlab_image }}:{{ gitlab_version }}"
+    state: started
+    recreate: true
+    restart_policy: unless-stopped
+    privileged: "{{ gitlab_privileged }}"
+    hostname: "{{ gitlab_hostname }}"
+    ports:
+      - "80:80"
+      - "443:443"
+    env:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url '{{ gitlab_external_url }}'
+        gitlab_rails['initial_root_password'] = '{{ gitlab_root_password }}'
+        prometheus_monitoring['enable'] = false
+    volumes:
+      - "{{ gitlab_data_dir }}/config:/etc/gitlab:Z"
+      - "{{ gitlab_data_dir }}/logs:/var/log/gitlab:Z"
+      - "{{ gitlab_data_dir }}/data:/var/opt/gitlab:Z"
+    shm_size: "{{ gitlab_shm_size }}"
+    memory: "{{ gitlab_memory_limit }}"
+    detach: true
+  become: true
+
+- name: Enable and start Podman socket service
+  ansible.builtin.systemd:
+    name: podman.socket
+    state: started
+    enabled: true
+  become: true
+
+- name: Create symbolic link for Docker socket compatibility
+  ansible.builtin.file:
+    src: /run/podman/podman.sock
+    dest: /var/run/docker.sock
+    state: link
+    force: true
+  become: true
+
+- name: Deploy GitLab Runner
+  containers.podman.podman_container:
+    name: gitlab-runner
+    recreate: true
+    state: started
+    restart_policy: unless-stopped
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:Z"
+      - "{{ gitlab_data_dir }}/gitlab-runner:/etc/gitlab-runner:Z"
+    image: "{{ gitlab_runner_image }}"
+    privileged: true
+  become: true
+
+- name: Waiting for GitLab response
+  ansible.builtin.uri:
+    url: "{{ gitlab_http_port_method }}://{{ ansible_host }}"
+    method: GET
+    status_code: 200
+    validate_certs: false
+  register: uri
+  until: uri.status == 200
+  retries: 60
+  delay: 5
+
+- name: Getting Gitlab IPv4 address
+  ansible.builtin.shell: |
+    hostname -I
+  register: ip_get
+  changed_when: false
+
+- name: Generating access token
+  ansible.builtin.shell:
+    cmd: "echo $RANDOM | sha256sum | head -c 30; echo;"
+  register: root_access_token
+  changed_when: false
+
+- name: Creating personal access token
+  ansible.builtin.shell:
+    cmd: "podman exec gitlab gitlab-rails runner \"token = User.find_by_username('root').personal_access_tokens.create(scopes: ['admin_mode','create_runner','manage_runner'], name: 'root_pat', expires_at: 1.days.from_now); token.set_token('{{ root_access_token.stdout }}'); token.save!\""
+  ignore_errors: true
+  become: true
+
+- name: Getting runner authentication API token
+  ansible.builtin.uri:
+    url: "{{ gitlab_http_port_method }}://{{ ansible_host }}/api/v4/user/runners"
+    method: POST
+    return_content: true
+    status_code: 201
+    headers:
+      PRIVATE-TOKEN: "{{ root_access_token.stdout }}"
+    body: "description=gitlab-runner&runner_type=instance_type"
+    validate_certs: false
+  register: runner_authentication_token
+
+- name: Registering runners
+  ansible.builtin.shell:
+    cmd: "podman exec gitlab-runner gitlab-runner register --non-interactive --url={{ gitlab_http_port_method }}://{{ ansible_host }} --token={{ runner_authentication_token.json.token }} --executor=docker --docker-privileged=true --docker-extra-hosts=gitlab:{{ ansible_host }} --docker-host=unix:///var/run/docker.sock --docker-image={{ gitlabRunner_default_docker_image }} --docker-pull-policy=if-not-present"
+  become: true
+
+- name: copy Dockerfile runner
+  ansible.builtin.copy:
+    src: files/Dockerfile
+    dest: "{{ gitlab_data_dir }}"
+    mode: '0777'
+  become: true
+
+- name: Build image-files
+  containers.podman.podman_image:
+    name: ansiblegit
+    path: "{{ gitlab_data_dir }}"
+    build:
+      force_rm: true
+      format: docker
+      file: "{{ gitlab_data_dir }}/Dockerfile"
+  become: true
