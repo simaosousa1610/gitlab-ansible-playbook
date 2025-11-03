@@ -55,6 +55,23 @@
     force: true
   become: true
 
+- name: copy Dockerfile runner
+  ansible.builtin.copy:
+    src: files/Dockerfile
+    dest: "{{ gitlab_data_dir }}"
+    mode: '0777'
+  become: true
+
+- name: Build image-files
+  containers.podman.podman_image:
+    name: ansiblegit
+    path: "{{ gitlab_data_dir }}"
+    build:
+      force_rm: true
+      format: docker
+      file: "{{ gitlab_data_dir }}/Dockerfile"
+  become: true
+
 - name: Deploy GitLab Runner
   containers.podman.podman_container:
     name: gitlab-runner
@@ -64,7 +81,7 @@
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:Z"
       - "{{ gitlab_data_dir }}/gitlab-runner:/etc/gitlab-runner:Z"
-    image: "{{ gitlab_runner_image }}"
+    image: "ansiblegit"
     privileged: true
   become: true
 
@@ -112,21 +129,4 @@
 - name: Registering runners
   ansible.builtin.shell:
     cmd: "podman exec gitlab-runner gitlab-runner register --non-interactive --url={{ gitlab_http_port_method }}://{{ ansible_host }} --token={{ runner_authentication_token.json.token }} --executor=docker --docker-privileged=true --docker-extra-hosts=gitlab:{{ ansible_host }} --docker-host=unix:///var/run/docker.sock --docker-image={{ gitlabRunner_default_docker_image }} --docker-pull-policy=if-not-present"
-  become: true
-
-- name: copy Dockerfile runner
-  ansible.builtin.copy:
-    src: files/Dockerfile
-    dest: "{{ gitlab_data_dir }}"
-    mode: '0777'
-  become: true
-
-- name: Build image-files
-  containers.podman.podman_image:
-    name: ansiblegit
-    path: "{{ gitlab_data_dir }}"
-    build:
-      force_rm: true
-      format: docker
-      file: "{{ gitlab_data_dir }}/Dockerfile"
   become: true
