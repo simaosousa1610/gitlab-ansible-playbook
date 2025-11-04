@@ -1,4 +1,3 @@
 ---
 # defaults file for install-gitlab
 gitlab_edition: 'community'
-gitlabRunner_default_docker_image: "docker:20.10"
